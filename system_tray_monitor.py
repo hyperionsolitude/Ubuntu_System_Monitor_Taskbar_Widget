@@ -3,6 +3,7 @@ import os
 import time
 import subprocess
 import base64
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -16,6 +17,30 @@ import psutil
 
 UPDATE_INTERVAL_SECONDS = 1
 MAX_LABEL_LEN = 140
+
+# Dynamic width detection
+def get_available_width() -> int:
+    """Estimate available width by checking screen resolution and typical UI elements"""
+    try:
+        # Try to get screen width via xrandr
+        result = subprocess.run(['xrandr', '--current'], capture_output=True, text=True, timeout=2)
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if '*' in line and 'connected' in line:
+                    # Parse resolution like "1920x1080*"
+                    parts = line.split()
+                    for part in parts:
+                        if 'x' in part and '*' in part:
+                            width = int(part.split('x')[0])
+                            # Balanced: clock area ~150px, system icons ~200px, padding ~100px
+                            # Account for font width (monospace ~6px per char for smaller text)
+                            available = max(120, (width - 450) // 6)  # Convert pixels to character width
+                            return min(available, MAX_LABEL_LEN)
+    except Exception:
+        pass
+    
+    # Fallback: balanced estimate (100 characters max)
+    return 100
 
 # 1x1 transparent PNG in base64 (fallback when icon file not available)
 BLANK_PNG_B64 = (
@@ -110,6 +135,86 @@ def get_ram_usage() -> Tuple[float, float]:
     used_gb = (vm.total - vm.available) / (1024 ** 3)
     total_gb = vm.total / (1024 ** 3)
     return used_gb, total_gb
+
+
+class PowerTracker:
+    def __init__(self):
+        self.last_time = time.time()
+        self.last_cpu_energy = 0
+        self.last_gpu_energy = 0
+        self.cpu_power = 0.0
+        self.gpu_power = 0.0
+        self.total_power = 0.0
+        
+    def get_cpu_power(self) -> float:
+        """Get CPU power from RAPL sensors"""
+        try:
+            # Try different RAPL paths
+            rapl_paths = [
+                '/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj',
+                '/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj',
+                '/sys/class/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj',  # Package
+            ]
+            
+            for path in rapl_paths:
+                if os.path.isfile(path):
+                    with open(path, 'r') as f:
+                        energy_uj = int(f.read().strip())
+                    
+                    now = time.time()
+                    dt = max(0.001, now - self.last_time)
+                    
+                    if self.last_cpu_energy > 0:
+                        # Convert microjoules to watts
+                        power_w = (energy_uj - self.last_cpu_energy) / (dt * 1_000_000)
+                        self.cpu_power = max(0, power_w)
+                    
+                    self.last_cpu_energy = energy_uj
+                    self.last_time = now
+                    return self.cpu_power
+        except Exception:
+            pass
+        
+        # Fallback: estimate based on CPU usage
+        cpu_pct = psutil.cpu_percent(interval=None)
+        return (cpu_pct / 100.0) * 25.0  # Rough estimate
+    
+    def get_gpu_power(self) -> float:
+        """Get GPU power from nvidia-smi"""
+        try:
+            result = subprocess.run([
+                'nvidia-smi', '--query-gpu=power.draw',
+                '--format=csv,noheader,nounits'
+            ], capture_output=True, text=True, timeout=1)
+            
+            if result.returncode == 0:
+                power_str = result.stdout.strip().splitlines()[0]
+                return float(power_str)
+        except Exception:
+            pass
+        return 0.0
+    
+    def get_total_system_power(self) -> float:
+        """Get CPU + GPU power only"""
+        cpu_pwr = self.get_cpu_power()
+        gpu_pwr = self.get_gpu_power()
+        
+        # Return only CPU + GPU power
+        total_power = cpu_pwr + gpu_pwr
+        self.total_power = total_power
+        return total_power
+
+
+# Global power tracker
+power_tracker = PowerTracker()
+
+
+def get_system_power() -> Optional[float]:
+    """Get total system power consumption in watts"""
+    try:
+        return power_tracker.get_total_system_power()
+    except Exception:
+        return None
 
 
 class RateTracker:
@@ -238,38 +343,48 @@ class TrayApp:
             used_gb, total_gb = get_ram_usage()
             up_bps, down_bps, read_bps, write_bps = self.rates.update()
             gpu_name, gpu_util, gpu_temp = get_gpu_stats()
+            system_power = get_system_power()
 
             def assemble(include_cpu_t=True, include_gpu_t=True, compact_sep=False, compact_rates=False):
-                # Compact tokens drop internal spaces to reduce chance of ellipsis
-                cpu_part_l = f"CPU{int(round(cpu_pct)):>3d}%" if compact_sep else f"CPU {cpu_pct:>3.0f}%"
+                # Static emoji titles with fixed-width value fields - no shifting
+                cpu_val = f"{int(round(cpu_pct)):>3d}%"
                 if include_cpu_t and cpu_temp is not None:
-                    cpu_part_l += f"/{int(cpu_temp):>2d}C"
+                    cpu_val += f"/{int(cpu_temp):>2d}C"
+                else:
+                    cpu_val += "   "  # Reserve space for temp
+                cpu_part_l = f"🔲 {cpu_val}"
 
-                ram_part_l = (f"RAM{used_gb:.1f}/{total_gb:.0f}G" if compact_sep
-                               else f"RAM {used_gb:.1f}/{total_gb:.0f}G")
+                ram_part_l = f"🐏 {used_gb:.1f}/{total_gb:.0f}G"
 
                 gpu_kind_l = 'D' if gpu_name == 'NVIDIA' else 'I'
+                gpu_val = ""
                 if gpu_util is not None or (include_gpu_t and gpu_temp is not None):
                     parts_l = []
                     if gpu_util is not None:
                         parts_l.append(f"{gpu_util:>3d}%")
                     if include_gpu_t and gpu_temp is not None:
                         parts_l.append(f"{int(gpu_temp):>2d}C")
-                    gpu_part_l = (f"GPU[{gpu_kind_l}]{'/'.join(parts_l) if parts_l else gpu_name}"
-                                   if compact_sep else f"GPU[{gpu_kind_l}] {'/'.join(parts_l) if parts_l else gpu_name}")
+                    gpu_val = '/'.join(parts_l) if parts_l else gpu_name
                 else:
-                    gpu_part_l = (f"GPU[{gpu_kind_l}]{gpu_name}" if compact_sep
-                                   else f"GPU[{gpu_kind_l}] {gpu_name}")
+                    gpu_val = gpu_name
+                gpu_part_l = f"🎮[{gpu_kind_l}] {gpu_val:<8}"
 
-                # Use fixed-width formatter to avoid shifting
-                disk_part_l = f"DISK R: {format_rate_fixed(read_bps)}  W: {format_rate_fixed(write_bps)}"
-                net_part_l  = f"NET D: {format_rate_fixed(down_bps)}  U: {format_rate_fixed(up_bps)}"
+                # Fixed-width disk and network with emoji titles
+                disk_part_l = f"💽 R{format_rate_fixed(read_bps)} W{format_rate_fixed(write_bps)}"
+                net_part_l  = f"🌐 D{format_rate_fixed(down_bps)} U{format_rate_fixed(up_bps)}"
+                
+                # Power with emoji title - lightning for AC, battery for battery
+                power_val = f"{system_power:.0f}W" if system_power is not None else "--W"
+                power_part_l = f"⚡ {power_val:<4}"
 
-                # Prefer wider spaces between sections for readability; still compact when needed
-                sep = '  ' if compact_sep else '     '
-                return sep.join([cpu_part_l, ram_part_l, gpu_part_l, disk_part_l, net_part_l])
+                # Use narrower spacing between sections
+                sep = ' ' if compact_sep else '  '
+                return sep.join([cpu_part_l, ram_part_l, gpu_part_l, disk_part_l, net_part_l, power_part_l])
 
             # Prefer keeping temperatures visible; compact other parts first
+            # Get dynamic width based on available space
+            dynamic_width = get_available_width()
+            
             candidates = [
                 (True, True, False, False),   # full
                 (True, True, False, True),    # compact rates only
@@ -281,7 +396,7 @@ class TrayApp:
             label = None
             for opts in candidates:
                 candidate = assemble(*opts)
-                if len(candidate) <= MAX_LABEL_LEN:
+                if len(candidate) <= dynamic_width:
                     label = candidate
                     break
             if label is None:
