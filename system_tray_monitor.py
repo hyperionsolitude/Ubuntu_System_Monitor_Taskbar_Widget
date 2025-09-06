@@ -69,14 +69,14 @@ def resolve_blank_icon_path() -> str:
 
 
 def format_bytes_per_sec(num_bytes: float) -> str:
-    # Display throughput without "/s" using space and Kb-style units
-    units = ['B', 'Kb', 'Mb', 'Gb']
-    value = float(num_bytes)
+    # Convert bits to bytes (8 bits = 1 byte) and display with KB-style units
+    units = ['B', 'KB', 'MB', 'GB']
+    value = float(num_bytes) / 8.0  # Convert bits to bytes
     for i, unit in enumerate(units):
         if value < 1024.0 or i == len(units) - 1:
             return f"{value:.0f} {unit}" if unit == 'B' else f"{value:.1f} {unit}"
         value /= 1024.0
-    return f"{value:.1f} Tb"
+    return f"{value:.1f} TB"
 
 
 def format_rate(num_bytes: float, compact: bool = False) -> str:
@@ -99,9 +99,9 @@ def format_rate(num_bytes: float, compact: bool = False) -> str:
 
 
 def format_rate_fixed(num_bytes: float) -> str:
-    # Fixed-width numeric (5 chars, 1 decimal) + space + 2-char unit
-    units2 = ['B ', 'Kb', 'Mb', 'Gb', 'Tb']
-    value = float(num_bytes)
+    # Convert bits to bytes (8 bits = 1 byte) and display with fixed-width format
+    units2 = ['B ', 'KB', 'MB', 'GB', 'TB']
+    value = float(num_bytes) / 8.0  # Convert bits to bytes
     idx = 0
     while value >= 1024.0 and idx < len(units2) - 1:
         value /= 1024.0
@@ -370,8 +370,8 @@ class TrayApp:
                 gpu_part_l = f"🎮[{gpu_kind_l}] {gpu_val:<8}"
 
                 # Fixed-width disk and network with emoji titles
-                disk_part_l = f"💽 R{format_rate_fixed(read_bps)} W{format_rate_fixed(write_bps)}"
-                net_part_l  = f"🌐 D{format_rate_fixed(down_bps)} U{format_rate_fixed(up_bps)}"
+                disk_part_l = f"💽 {format_rate_fixed(read_bps)}/{format_rate_fixed(write_bps)}"
+                net_part_l  = f"🌐 {format_rate_fixed(down_bps)}/{format_rate_fixed(up_bps)}"
                 
                 # Power with emoji title - lightning for AC, battery for battery
                 power_val = f"{system_power:.0f}W" if system_power is not None else "--W"
