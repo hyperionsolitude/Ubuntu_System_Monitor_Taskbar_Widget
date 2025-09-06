@@ -98,16 +98,29 @@ def format_rate(num_bytes: float, compact: bool = False) -> str:
         return f"{value:.1f} {units[idx]}"
 
 
-def format_rate_fixed(num_bytes: float) -> str:
-    # Convert bits to bytes (8 bits = 1 byte) and display with fixed-width format
-    units2 = ['B ', 'KB', 'MB', 'GB', 'TB']
-    value = float(num_bytes) / 8.0  # Convert bits to bytes
+def format_network_rate_fixed(num_bytes: float) -> str:
+    # Display network speeds in bytes per second (MB/s, KB/s, etc.)
+    # psutil already returns bytes, no conversion needed
+    units = ['B ', 'KB', 'MB', 'GB', 'TB']
+    value = float(num_bytes)  # Already in bytes
     idx = 0
-    while value >= 1024.0 and idx < len(units2) - 1:
+    while value >= 1024.0 and idx < len(units) - 1:
         value /= 1024.0
         idx += 1
     num = f"{value:5.1f}"
-    return f"{num} {units2[idx]}"
+    return f"{num} {units[idx]}"
+
+
+def format_disk_rate_fixed(num_bytes: float) -> str:
+    # Display disk I/O in bytes per second (KB/s, MB/s, etc.)
+    units = ['B ', 'KB', 'MB', 'GB', 'TB']
+    value = float(num_bytes)  # Keep as bytes
+    idx = 0
+    while value >= 1024.0 and idx < len(units) - 1:
+        value /= 1024.0
+        idx += 1
+    num = f"{value:5.1f}"
+    return f"{num} {units[idx]}"
 
 
 def get_cpu_percent() -> float:
@@ -403,8 +416,8 @@ class TrayApp:
                 gpu_part_l = f"🎮[{gpu_kind_l}] {gpu_val:<8}"
 
                 # Fixed-width disk and network with emoji titles
-                disk_part_l = f"💽 {format_rate_fixed(read_bps)}/{format_rate_fixed(write_bps)}"
-                net_part_l  = f"🌐 {format_rate_fixed(down_bps)}/{format_rate_fixed(up_bps)}"
+                disk_part_l = f"💽 {format_disk_rate_fixed(read_bps)}/{format_disk_rate_fixed(write_bps)}"
+                net_part_l  = f"🌐 {format_network_rate_fixed(down_bps)}/{format_network_rate_fixed(up_bps)}"
                 
                 # Power with emoji title - lightning for AC, battery for battery
                 power_source = get_power_source()
