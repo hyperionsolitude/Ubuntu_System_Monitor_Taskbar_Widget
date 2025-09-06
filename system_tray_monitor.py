@@ -306,6 +306,39 @@ def get_gpu_stats() -> Tuple[str, Optional[int], Optional[float]]:
     return 'INTEL', util, temp
 
 
+def get_power_source() -> str:
+    """Detect if system is running on AC or battery power"""
+    try:
+        # Check AC adapter status
+        ac_paths = [
+            '/sys/class/power_supply/ADP1/online',
+            '/sys/class/power_supply/AC/online',
+            '/sys/class/power_supply/ACAD/online',
+        ]
+        
+        for path in ac_paths:
+            if os.path.isfile(path):
+                with open(path, 'r') as f:
+                    if int(f.read().strip()) == 1:
+                        return 'AC'
+                return 'BATTERY'
+        
+        # Check if battery exists (indicates laptop)
+        battery_paths = [
+            '/sys/class/power_supply/BAT0',
+            '/sys/class/power_supply/BAT1',
+        ]
+        
+        for path in battery_paths:
+            if os.path.exists(path):
+                return 'BATTERY'
+        
+        # Default to AC if no battery detected
+        return 'AC'
+    except Exception:
+        return 'AC'
+
+
 class TrayApp:
     def __init__(self):
         self.ind = AppIndicator3.Indicator.new(
@@ -374,8 +407,10 @@ class TrayApp:
                 net_part_l  = f"🌐 {format_rate_fixed(down_bps)}/{format_rate_fixed(up_bps)}"
                 
                 # Power with emoji title - lightning for AC, battery for battery
+                power_source = get_power_source()
+                power_emoji = "⚡" if power_source == 'AC' else "🔋"
                 power_val = f"{system_power:.0f}W" if system_power is not None else "--W"
-                power_part_l = f"⚡ {power_val:<4}"
+                power_part_l = f"{power_emoji} {power_val:<4}"
 
                 # Use narrower spacing between sections
                 sep = ' ' if compact_sep else '  '
