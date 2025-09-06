@@ -7,7 +7,7 @@ Minimal, high-contrast top bar monitor for GNOME showing:
 - 🎮 GPU utilization and temperature with type marker (GPU[D]/GPU[I])
 - 💽 Disk read/write rates in bytes (KB/MB/GB)
 - 🌐 Network download/upload rates in bytes (KB/MB/GB)
-- ⚡ Total system power consumption (CPU + GPU)
+- ⚡/🔋 Total system power consumption (CPU + GPU) with AC/battery detection
 
 ## Features
 
@@ -20,6 +20,7 @@ Minimal, high-contrast top bar monitor for GNOME showing:
 - **Auto-detect GPU**: NVIDIA (via `nvidia-smi`) or Intel (`intel_gpu_top`)
 - **Temperature Monitoring**: CPU/GPU temps via `lm-sensors`/`coretemp`
 - **Power Tracking**: RAPL sensors for CPU power, nvidia-smi for GPU power
+- **AC/Battery Detection**: Dynamic emoji switching (⚡ for AC, 🔋 for battery)
 - **Hidden Icon**: Transparent icon for clean text-only appearance
 - **Auto-start**: Systemd user service starts automatically on login
 
@@ -72,7 +73,7 @@ The monitor displays in a compact format with emoji icons:
 - **GPU**: Type [D]iscrete/[I]ntegrated, usage %, temperature
 - **Disk**: Read/Write rates in bytes
 - **Network**: Download/Upload rates in bytes  
-- **Power**: Total system power (CPU + GPU)
+- **Power**: Total system power (CPU + GPU) - ⚡ for AC, 🔋 for battery
 
 ## Configuration
 
