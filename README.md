@@ -27,8 +27,8 @@ Minimal, high-contrast top bar monitor for GNOME showing:
 ## Install (One command)
 
 ```bash
-git clone https://github.com/hyperionsolitude/Ubuntu_System_Mobitor_Taskbar_Widget.git
-cd Ubuntu_System_Mobitor_Taskbar_Widget
+git clone https://github.com/hyperionsolitude/Ubuntu_System_Monitor_Taskbar_Widget.git
+cd Ubuntu_System_Monitor_Taskbar_Widget
 ./install.sh
 ```
 
