@@ -39,5 +39,21 @@ echo "[*] Reloading and enabling service..."
 systemctl --user daemon-reload
 systemctl --user enable --now "$APP_NAME.service"
 
-echo "[✓] Installed and started. Manage with: systemctl --user status $APP_NAME.service"
+echo "[*] Checking service status..."
+if systemctl --user is-active --quiet "$APP_NAME.service"; then
+    echo "[✓] Service is running successfully!"
+    echo "[*] Service status:"
+    systemctl --user status "$APP_NAME.service" --no-pager -l
+else
+    echo "[✗] Service failed to start. Check logs with: journalctl --user -u $APP_NAME.service"
+    exit 1
+fi
+
+echo ""
+echo "[✓] Installation complete! The system monitor should now be visible in your system tray."
+echo "[*] To manage the service:"
+echo "    - Check status: systemctl --user status $APP_NAME.service --no-pager"
+echo "    - Restart: systemctl --user restart $APP_NAME.service"
+echo "    - Stop: systemctl --user stop $APP_NAME.service"
+echo "    - Disable: systemctl --user disable $APP_NAME.service"
 
