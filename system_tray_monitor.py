@@ -344,7 +344,8 @@ def read_gpu_intel() -> Tuple[Optional[int], Optional[float]]:
                 break
     except Exception:
         pass
-    # Utilization via intel_gpu_top -J (sample ~100ms)
+    
+    # Try intel_gpu_top first (requires CAP_PERFMON or sudo)
     try:
         out = subprocess.check_output(['intel_gpu_top', '-J', '-s', '100', '-o', '-'],
                                       stderr=subprocess.DEVNULL, text=True, timeout=0.8)
@@ -359,7 +360,33 @@ def read_gpu_intel() -> Tuple[Optional[int], Optional[float]]:
             if vals:
                 util = int(min(100.0, max(0.0, sum(vals) / max(1, len(vals)))))
     except Exception:
-        pass
+        # Fallback: Use GPU frequency as utilization proxy
+        try:
+            # Find Intel GPU card (usually card1 for integrated)
+            for card in ['card0', 'card1', 'card2']:
+                freq_path = f'/sys/class/drm/{card}/gt_cur_freq_mhz'
+                max_freq_path = f'/sys/class/drm/{card}/gt_max_freq_mhz'
+                if os.path.isfile(freq_path) and os.path.isfile(max_freq_path):
+                    with open(freq_path, 'r') as f:
+                        current_freq = float(f.read().strip())
+                    with open(max_freq_path, 'r') as f:
+                        max_freq = float(f.read().strip())
+                    
+                    if max_freq > 0:
+                        # Calculate utilization based on frequency scaling
+                        # Intel GPUs scale frequency based on load
+                        freq_util = (current_freq / max_freq) * 100
+                        # Apply some scaling to make it more realistic
+                        # Idle is usually around 350MHz, so adjust accordingly
+                        if current_freq <= 350:  # Idle frequency
+                            util = 0
+                        else:
+                            # Scale from 350MHz to max_freq as 0-100%
+                            util = int(min(100, max(0, ((current_freq - 350) / (max_freq - 350)) * 100)))
+                    break
+        except Exception:
+            pass
+    
     return util, temp
 
 
