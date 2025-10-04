@@ -12,7 +12,53 @@ fi
 
 echo "[*] Installing prerequisites..."
 sudo apt-get update -y
-sudo apt-get install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-appindicator3-0.1 gir1.2-ayatanaappindicator3-0.1 python3-psutil lm-sensors intel-gpu-tools
+
+# Core packages (needed on all systems)
+CORE_PACKAGES="python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-appindicator3-0.1 gir1.2-ayatanaappindicator3-0.1 python3-psutil lm-sensors"
+
+# Detect GPU vendor and install appropriate tools
+echo "[*] Detecting GPU hardware..."
+GPU_VENDOR=""
+if lspci | grep -i "vga\|3d\|display" | grep -i "nvidia" >/dev/null 2>&1; then
+    GPU_VENDOR="nvidia"
+    echo "[*] NVIDIA GPU detected"
+elif lspci | grep -i "vga\|3d\|display" | grep -i "amd\|ati\|radeon" >/dev/null 2>&1; then
+    GPU_VENDOR="amd"
+    echo "[*] AMD GPU detected"
+    # Install AMD GPU monitoring tools
+    CORE_PACKAGES="$CORE_PACKAGES radeontop"
+    # Try to install rocm-smi if available (for newer AMD GPUs)
+    if apt-cache show rocm-smi >/dev/null 2>&1; then
+        CORE_PACKAGES="$CORE_PACKAGES rocm-smi"
+    fi
+elif lspci | grep -i "vga\|3d\|display" | grep -i "intel" >/dev/null 2>&1; then
+    GPU_VENDOR="intel"
+    echo "[*] Intel GPU detected"
+    # Install Intel GPU tools
+    CORE_PACKAGES="$CORE_PACKAGES intel-gpu-tools"
+else
+    echo "[*] Unknown GPU vendor - installing Intel tools as fallback"
+    GPU_VENDOR="unknown"
+    CORE_PACKAGES="$CORE_PACKAGES intel-gpu-tools"
+fi
+
+echo "[*] Installing packages: $CORE_PACKAGES"
+sudo apt-get install -y $CORE_PACKAGES
+
+echo "[*] GPU detection summary:"
+echo "    - GPU Vendor: $GPU_VENDOR"
+if [[ "$GPU_VENDOR" == "nvidia" ]]; then
+    echo "    - NVIDIA GPU detected (nvidia-smi should be available with drivers)"
+elif [[ "$GPU_VENDOR" == "amd" ]]; then
+    echo "    - AMD GPU detected (installed radeontop)"
+    if echo "$CORE_PACKAGES" | grep -q "rocm-smi"; then
+        echo "    - Also installed rocm-smi for newer AMD GPUs"
+    fi
+elif [[ "$GPU_VENDOR" == "intel" ]]; then
+    echo "    - Intel GPU detected (installed intel-gpu-tools)"
+else
+    echo "    - Unknown GPU (installed intel-gpu-tools as fallback)"
+fi
 
 echo "[*] Enabling sensors (one-time). If temps missing, run: sudo modprobe coretemp"
 

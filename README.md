@@ -4,7 +4,7 @@ Minimal, high-contrast top bar monitor for GNOME showing:
 
 - 🔲 CPU % and temperature
 - 🐏 RAM used/total  
-- 🎮 GPU utilization and temperature with type marker (GPU[D]/GPU[I])
+- 🎮 GPU utilization and temperature with type marker (GPU[D]/GPU[A]/GPU[I])
 - 💽 Disk read/write rates in bytes (KB/MB/GB)
 - 🌐 Network download/upload rates in bytes (KB/MB/GB)
 - ⚡/🔋 Total system power consumption (CPU + GPU) with AC/battery detection
@@ -17,9 +17,9 @@ Minimal, high-contrast top bar monitor for GNOME showing:
 - **Compact Display**: Narrow spacing and smaller font for optimal space usage
 - **Dynamic Width**: Auto-adjusts to available space between clock and system icons
 - **1s Refresh**: Real-time updates every second
-- **Auto-detect GPU**: NVIDIA (via `nvidia-smi`) or Intel (`intel_gpu_top`)
+- **Auto-detect GPU**: NVIDIA (via `nvidia-smi`), AMD (via `rocm-smi`/`radeontop`), or Intel (`intel_gpu_top`)
 - **Temperature Monitoring**: CPU/GPU temps via `lm-sensors`/`coretemp`
-- **Power Tracking**: RAPL sensors for CPU power, nvidia-smi for GPU power
+- **Power Tracking**: RAPL sensors for CPU power, nvidia-smi/rocm-smi for GPU power
 - **AC/Battery Detection**: Dynamic emoji switching (⚡ for AC, 🔋 for battery)
 - **Hidden Icon**: Transparent icon for clean text-only appearance
 - **Auto-start**: Systemd user service starts automatically on login
@@ -31,6 +31,12 @@ git clone https://github.com/hyperionsolitude/Ubuntu_System_Mobitor_Taskbar_Widg
 cd Ubuntu_System_Mobitor_Taskbar_Widget
 ./install.sh
 ```
+
+**Smart Installation**: The installer automatically detects your GPU hardware and only installs the necessary monitoring tools:
+- **NVIDIA systems**: Installs core packages only (nvidia-smi comes with drivers)
+- **AMD systems**: Installs core packages + radeontop (+ rocm-smi if available)
+- **Intel systems**: Installs core packages + intel-gpu-tools
+- **Unknown systems**: Installs core packages + intel-gpu-tools as fallback
 
 Manage service:
 
@@ -48,17 +54,24 @@ Uninstall:
 
 ## Requirements
 
-The installer ensures these are present:
+The installer automatically installs the appropriate packages based on your hardware:
 
+**Core packages** (installed on all systems):
 - `python3-gi`, `gir1.2-gtk-3.0`, `gir1.2-appindicator3-0.1`, `gir1.2-ayatanaappindicator3-0.1`
-- `python3-psutil`, `lm-sensors`, `intel-gpu-tools`
-- Optional NVIDIA: `nvidia-smi` (provided by NVIDIA drivers)
+- `python3-psutil`, `lm-sensors`
+
+**Hardware-specific packages** (installed only when needed):
+- **NVIDIA systems**: No additional packages (nvidia-smi comes with drivers)
+- **AMD systems**: `radeontop` (+ `rocm-smi` if available)
+- **Intel systems**: `intel-gpu-tools`
 
 If CPU temps are missing:
 
 ```bash
 sudo modprobe coretemp
 ```
+
+**Note**: CPU power monitoring via RAPL sensors may require elevated permissions. If CPU power shows as 0W, you may need to run the application with appropriate permissions or configure your system to allow access to RAPL energy files.
 
 ## Display Format
 

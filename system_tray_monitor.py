@@ -161,31 +161,40 @@ class PowerTracker:
         self.total_power = 0.0
         
     def get_cpu_power(self) -> float:
-        """Get CPU power from RAPL sensors"""
+        """Get CPU power from RAPL sensors (Intel and AMD)"""
         try:
-            # Try different RAPL paths
+            # Try different RAPL paths for both Intel and AMD
             rapl_paths = [
+                # Intel RAPL paths
                 '/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj',
                 '/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj',
                 '/sys/class/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj',  # Package
+                # AMD RAPL paths
+                '/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj',  # AMD also uses intel-rapl namespace
+                '/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj',
+                '/sys/class/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj',
             ]
             
             for path in rapl_paths:
                 if os.path.isfile(path):
-                    with open(path, 'r') as f:
-                        energy_uj = int(f.read().strip())
-                    
-                    now = time.time()
-                    dt = max(0.001, now - self.last_time)
-                    
-                    if self.last_cpu_energy > 0:
-                        # Convert microjoules to watts
-                        power_w = (energy_uj - self.last_cpu_energy) / (dt * 1_000_000)
-                        self.cpu_power = max(0, power_w)
-                    
-                    self.last_cpu_energy = energy_uj
-                    self.last_time = now
-                    return self.cpu_power
+                    try:
+                        with open(path, 'r') as f:
+                            energy_uj = int(f.read().strip())
+                        
+                        now = time.time()
+                        dt = max(0.001, now - self.last_time)
+                        
+                        if self.last_cpu_energy > 0:
+                            # Convert microjoules to watts
+                            power_w = (energy_uj - self.last_cpu_energy) / (dt * 1_000_000)
+                            self.cpu_power = max(0, power_w)
+                        
+                        self.last_cpu_energy = energy_uj
+                        self.last_time = now
+                        return self.cpu_power
+                    except (PermissionError, OSError):
+                        # Skip this path if we don't have permission
+                        continue
         except Exception:
             pass
         
@@ -194,7 +203,8 @@ class PowerTracker:
         return (cpu_pct / 100.0) * 25.0  # Rough estimate
     
     def get_gpu_power(self) -> float:
-        """Get GPU power from nvidia-smi"""
+        """Get GPU power from nvidia-smi or AMD GPU"""
+        # Try NVIDIA first
         try:
             result = subprocess.run([
                 'nvidia-smi', '--query-gpu=power.draw',
@@ -206,6 +216,47 @@ class PowerTracker:
                 return float(power_str)
         except Exception:
             pass
+        
+        # Try AMD GPU power via rocm-smi
+        try:
+            result = subprocess.run([
+                'rocm-smi', '--showpower', '--json'
+            ], capture_output=True, text=True, timeout=1)
+            
+            if result.returncode == 0:
+                import json
+                data = json.loads(result.stdout)
+                # Look for power values in the JSON structure
+                for card_id, card_data in data.items():
+                    if isinstance(card_data, dict) and 'Power (W)' in card_data:
+                        return float(card_data['Power (W)'])
+        except Exception:
+            pass
+        
+        # Try AMD GPU power via sysfs (for newer kernels)
+        try:
+            # Look for AMD GPU power files in hwmon directories
+            for card in ['card0', 'card1', 'card2']:
+                # Check if this is an AMD GPU first
+                vendor_path = f'/sys/class/drm/{card}/device/vendor'
+                if os.path.isfile(vendor_path):
+                    with open(vendor_path, 'r') as f:
+                        vendor_id = f.read().strip()
+                    # AMD vendor ID is 0x1002
+                    if vendor_id == '0x1002':
+                        # Look for power files in hwmon subdirectories
+                        hwmon_dir = f'/sys/class/drm/{card}/device/hwmon'
+                        if os.path.isdir(hwmon_dir):
+                            for hwmon_name in os.listdir(hwmon_dir):
+                                power_path = f'{hwmon_dir}/{hwmon_name}/power1_average'
+                                if os.path.isfile(power_path):
+                                    with open(power_path, 'r') as f:
+                                        power_uw = int(f.read().strip())
+                                    return power_uw / 1_000_000.0  # Convert microwatts to watts
+                        break
+        except Exception:
+            pass
+        
         return 0.0
     
     def get_total_system_power(self) -> float:
@@ -312,10 +363,134 @@ def read_gpu_intel() -> Tuple[Optional[int], Optional[float]]:
     return util, temp
 
 
+def read_gpu_amd() -> Tuple[Optional[int], Optional[float]]:
+    """Read AMD GPU utilization and temperature"""
+    util = None
+    temp = None
+    
+    # Try rocm-smi first (ROCm tools)
+    try:
+        result = subprocess.run([
+            'rocm-smi', '--showuse', '--showtemp', '--json'
+        ], capture_output=True, text=True, timeout=1)
+        
+        if result.returncode == 0:
+            import json
+            data = json.loads(result.stdout)
+            for card_id, card_data in data.items():
+                if isinstance(card_data, dict):
+                    # Extract utilization
+                    if 'GPU use (%)' in card_data:
+                        util = int(float(card_data['GPU use (%)']))
+                    # Extract temperature
+                    if 'Temperature (C)' in card_data:
+                        temp = float(card_data['Temperature (C)'])
+                    break
+    except Exception:
+        pass
+    
+    # Try radeontop as fallback
+    if util is None:
+        try:
+            result = subprocess.run([
+                'radeontop', '-d', '-', '-l', '1'
+            ], capture_output=True, text=True, timeout=1)
+            
+            if result.returncode == 0:
+                # Parse radeontop output
+                lines = result.stdout.strip().split('\n')
+                for line in lines:
+                    if 'gpu' in line.lower() and '%' in line:
+                        # Extract percentage from line like "gpu 45.2%"
+                        parts = line.split()
+                        for part in parts:
+                            if '%' in part:
+                                util = int(float(part.replace('%', '')))
+                                break
+                        break
+        except Exception:
+            pass
+    
+    # Try sysfs for AMD GPU utilization
+    if util is None:
+        try:
+            for card in ['card0', 'card1', 'card2']:
+                # Check if this is an AMD GPU
+                vendor_path = f'/sys/class/drm/{card}/device/vendor'
+                if os.path.isfile(vendor_path):
+                    with open(vendor_path, 'r') as f:
+                        vendor_id = f.read().strip()
+                    # AMD vendor ID is 0x1002
+                    if vendor_id == '0x1002':
+                        # Try to get GPU busy percentage from multiple locations
+                        busy_paths = [
+                            f'/sys/class/drm/{card}/device/gpu_busy_percent',
+                            f'/sys/class/drm/{card}/device/gt_busy_percent',
+                        ]
+                        for busy_path in busy_paths:
+                            if os.path.isfile(busy_path):
+                                with open(busy_path, 'r') as f:
+                                    util = int(float(f.read().strip()))
+                                break
+                        break
+        except Exception:
+            pass
+    
+    # Try sysfs for AMD GPU temperature
+    if temp is None:
+        try:
+            for card in ['card0', 'card1', 'card2']:
+                # Check if this is an AMD GPU
+                vendor_path = f'/sys/class/drm/{card}/device/vendor'
+                if os.path.isfile(vendor_path):
+                    with open(vendor_path, 'r') as f:
+                        vendor_id = f.read().strip()
+                    # AMD vendor ID is 0x1002
+                    if vendor_id == '0x1002':
+                        # Try different temperature sensor paths
+                        temp_paths = [
+                            f'/sys/class/drm/{card}/device/hwmon/hwmon*/temp1_input',
+                            f'/sys/class/drm/{card}/device/hwmon/hwmon*/temp2_input',
+                            f'/sys/class/hwmon/hwmon*/temp1_input',
+                            f'/sys/class/hwmon/hwmon*/temp2_input',
+                        ]
+                        
+                        for temp_pattern in temp_paths:
+                            import glob
+                            temp_files = glob.glob(temp_pattern)
+                            for temp_file in temp_files:
+                                try:
+                                    with open(temp_file, 'r') as f:
+                                        temp_val = float(f.read().strip())
+                                    # AMD GPU temps are in millidegrees, convert to degrees
+                                    if temp_val > 200:
+                                        temp = temp_val / 1000.0
+                                    else:
+                                        temp = temp_val
+                                    break
+                                except Exception:
+                                    continue
+                            if temp is not None:
+                                break
+                        break
+        except Exception:
+            pass
+    
+    return util, temp
+
+
 def get_gpu_stats() -> Tuple[str, Optional[int], Optional[float]]:
+    # Try NVIDIA first
     util, temp = read_gpu_nvidia()
     if util is not None or temp is not None:
         return 'NVIDIA', util, temp
+    
+    # Try AMD second
+    util, temp = read_gpu_amd()
+    if util is not None or temp is not None:
+        return 'AMD', util, temp
+    
+    # Try Intel as fallback
     util, temp = read_gpu_intel()
     return 'INTEL', util, temp
 
@@ -436,7 +611,7 @@ class TrayApp:
 
                 ram_part_l = f"🐏 {used_gb:.1f}/{total_gb:.0f}G"
 
-                gpu_kind_l = 'D' if gpu_name == 'NVIDIA' else 'I'
+                gpu_kind_l = 'D' if gpu_name == 'NVIDIA' else ('A' if gpu_name == 'AMD' else 'I')
                 gpu_val = ""
                 if gpu_util is not None or (include_gpu_t and gpu_temp is not None):
                     parts_l = []
