@@ -4,6 +4,7 @@ import time
 import subprocess
 import base64
 import shutil
+import re
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -322,31 +323,64 @@ def get_gpu_stats() -> Tuple[str, Optional[int], Optional[float]]:
 def get_power_source() -> str:
     """Detect if system is running on AC or battery power"""
     try:
-        # Check AC adapter status
-        ac_paths = [
-            '/sys/class/power_supply/ADP1/online',
-            '/sys/class/power_supply/AC/online',
-            '/sys/class/power_supply/ACAD/online',
+        # Define regex patterns for AC adapter power supplies
+        ac_patterns = [
+            r'^ADP.*$',            # ADP, ADP0, ADP1, ADP-anything, etc.
+            r'^AC.*$',             # AC, AC0, AC1, AC-anything, AC_anything, etc.
+            r'^ACAD.*$',           # ACAD, ACAD0, ACAD1, ACAD-anything, etc.
+            r'.*ac.*adapter.*',    # Any device containing "ac" and "adapter"
+            r'.*mains.*',          # Any device containing "mains"
+            r'.*line.*power.*',    # Any device containing "line power"
         ]
         
-        for path in ac_paths:
-            if os.path.isfile(path):
-                with open(path, 'r') as f:
-                    if int(f.read().strip()) == 1:
-                        return 'AC'
-                return 'BATTERY'
+        # Check all power supplies using regex patterns
+        power_supply_dir = '/sys/class/power_supply'
+        if os.path.isdir(power_supply_dir):
+            for item in os.listdir(power_supply_dir):
+                # Check if item matches any AC adapter pattern
+                is_ac_adapter = False
+                for pattern in ac_patterns:
+                    if re.match(pattern, item, re.IGNORECASE):
+                        is_ac_adapter = True
+                        break
+                
+                if is_ac_adapter:
+                    online_path = os.path.join(power_supply_dir, item, 'online')
+                    if os.path.isfile(online_path):
+                        try:
+                            with open(online_path, 'r') as f:
+                                if int(f.read().strip()) == 1:
+                                    return 'AC'
+                        except (ValueError, OSError):
+                            continue
         
-        # Check if battery exists (indicates laptop)
-        battery_paths = [
-            '/sys/class/power_supply/BAT0',
-            '/sys/class/power_supply/BAT1',
-        ]
+        # If no AC adapter is online, check if we have batteries
+        battery_patterns = [r'^BAT\d*$', r'.*battery.*']
+        has_battery = False
         
-        for path in battery_paths:
-            if os.path.exists(path):
-                return 'BATTERY'
+        if os.path.isdir(power_supply_dir):
+            for item in os.listdir(power_supply_dir):
+                for pattern in battery_patterns:
+                    if re.match(pattern, item, re.IGNORECASE):
+                        has_battery = True
+                        break
+                if has_battery:
+                    break
         
-        # Default to AC if no battery detected
+        # If we have batteries and AC is not online, we're on battery
+        if has_battery:
+            return 'BATTERY'
+        
+        # Try using upower as fallback
+        try:
+            result = subprocess.run(['upower', '-i', '/org/freedesktop/UPower/devices/line_power_AC'], 
+                                  capture_output=True, text=True, timeout=2)
+            if result.returncode == 0 and 'online: yes' in result.stdout:
+                return 'AC'
+        except Exception:
+            pass
+        
+        # Default to AC if we can't determine (desktop systems)
         return 'AC'
     except Exception:
         return 'AC'
