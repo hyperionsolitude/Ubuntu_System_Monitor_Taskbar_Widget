@@ -1,0 +1,18 @@
+{
+  "KPlugin": {
+    "Id": "com.cachyos.systemmonitor.taskbar",
+    "Name": "System Monitor Taskbar (Centered)",
+    "Description": "Centered one-line system stats for KDE Plasma panel",
+    "Icon": "utilities-system-monitor",
+    "Version": "1.0.0",
+    "License": "MIT",
+    "Authors": [
+      {
+        "Name": "Ubuntu System Monitor Taskbar Widget contributors"
+      }
+    ]
+  },
+  "KPackageStructure": "Plasma/Applet",
+  "KPackageType": "Plasma/Applet",
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

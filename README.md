@@ -1,6 +1,6 @@
-# System Tray Monitor (GNOME)
+# System Monitor Taskbar Widget (GNOME + KDE Plasma)
 
-Minimal, high-contrast top bar monitor for GNOME showing:
+Minimal, high-contrast taskbar/panel monitor showing:
 
 - 🔲 CPU % and temperature
 - 🐏 RAM used/total  
@@ -21,10 +21,11 @@ Minimal, high-contrast top bar monitor for GNOME showing:
 - **Temperature Monitoring**: CPU/GPU temps via `lm-sensors`/`coretemp`
 - **Power Tracking**: RAPL sensors for CPU power, nvidia-smi/rocm-smi for GPU power
 - **AC/Battery Detection**: Dynamic emoji switching (⚡ for AC, 🔋 for battery)
-- **Hidden Icon**: Transparent icon for clean text-only appearance
-- **Auto-start**: Systemd user service starts automatically on login
+- **Hidden Icon** (GNOME): Transparent icon for clean text-only appearance
+- **Centered Compact View** (KDE): Text is centered inside the widget in the panel
+- **Auto-start** (GNOME): Systemd user service starts automatically on login
 
-## Install (One command)
+## Install (GNOME)
 
 ```bash
 git clone https://github.com/hyperionsolitude/Ubuntu_System_Monitor_Taskbar_Widget.git
@@ -32,13 +33,38 @@ cd Ubuntu_System_Monitor_Taskbar_Widget
 ./install.sh
 ```
 
+## Install (CachyOS/Arch KDE Plasma 6)
+
+```bash
+git clone https://github.com/hyperionsolitude/Ubuntu_System_Monitor_Taskbar_Widget.git
+cd Ubuntu_System_Monitor_Taskbar_Widget
+./install_kde_plasmoid.sh
+```
+
+Then add widget to panel:
+
+1. Right click panel -> **Add Widgets**
+2. Search **System Monitor Taskbar (Centered)**
+3. Drag into panel center area (use spacers left/right if needed)
+
+### KDE power telemetry note
+
+- On some laptops, AC adapter devices expose only `online` state and not wattage.
+- In that case, this widget uses the most accurate available fallback:
+  - Intel RAPL energy counters (package/core/uncore/dram), then
+  - CPU/GPU direct sensors where available.
+- Optional calibration:
+  - `KDE_SYSMON_CPU_POWER_MULTIPLIER` (default `1.0`)
+  - `KDE_SYSMON_GPU_POWER_MULTIPLIER` (default `1.0`)
+  - `KDE_SYSMON_RATE_SAMPLE_SECONDS` (default `0.30`)
+
 **Smart Installation**: The installer automatically detects your GPU hardware and only installs the necessary monitoring tools:
 - **NVIDIA systems**: Installs core packages only (nvidia-smi comes with drivers)
 - **AMD systems**: Installs core packages + radeontop (+ rocm-smi if available)
 - **Intel systems**: Installs core packages + intel-gpu-tools
 - **Unknown systems**: Installs core packages + intel-gpu-tools as fallback
 
-Manage service:
+Manage GNOME service:
 
 ```bash
 systemctl --user status system-tray-monitor.service
@@ -46,10 +72,16 @@ systemctl --user restart system-tray-monitor.service
 systemctl --user disable --now system-tray-monitor.service
 ```
 
-Uninstall:
+Uninstall (GNOME):
 
 ```bash
 ./uninstall.sh
+```
+
+Uninstall (KDE Plasma):
+
+```bash
+./uninstall_kde_plasmoid.sh
 ```
 
 ## Requirements
