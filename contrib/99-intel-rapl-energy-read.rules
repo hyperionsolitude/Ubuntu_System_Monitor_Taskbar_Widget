@@ -1,0 +1,5 @@
+# World-readable RAPL energy_uj (Linux exposes AMD Ryzen here too under intel-rapl).
+# Install: sudo install -m 644 contrib/99-intel-rapl-energy-read.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload-rules && sudo udevadm trigger -s powercap -c add
+
+ACTION=="add", SUBSYSTEM=="powercap", KERNEL=="intel-rapl:*", RUN+="/bin/sh -c 'for z in /sys/class/powercap/intel-rapl*/energy_uj /sys/class/powercap/intel-rapl*/*/energy_uj; do test -f \"$$z\" && chmod a+r \"$$z\"; done; for z in /sys/class/powercap/intel-rapl*/*/max_energy_range_uj /sys/class/powercap/intel-rapl*/max_energy_range_uj; do test -f \"$$z\" && chmod a+r \"$$z\"; done; :'"

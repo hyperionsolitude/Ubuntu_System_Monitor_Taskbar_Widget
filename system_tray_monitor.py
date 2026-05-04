@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import json
 import time
 import subprocess
 import base64
@@ -151,30 +152,112 @@ def get_ram_usage() -> Tuple[float, float]:
     return used_gb, total_gb
 
 
+def _read_float_sysfs(path: str, scale: float = 1.0) -> Optional[float]:
+    try:
+        if os.path.isfile(path):
+            with open(path, encoding='utf-8') as f:
+                return float(f.read().strip()) * scale
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _read_uevent_supply_value(base_dir: str, key: str) -> Optional[float]:
+    uevent_path = os.path.join(base_dir, 'uevent')
+    try:
+        if not os.path.isfile(uevent_path):
+            return None
+        with open(uevent_path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(key + '='):
+                    return float(line.split('=', 1)[1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _read_supply_power_w_sysfs(base_dir: str) -> Optional[float]:
+    p_now = _read_float_sysfs(os.path.join(base_dir, 'power_now'), 1e-6)
+    if p_now is None:
+        raw = _read_uevent_supply_value(base_dir, 'POWER_SUPPLY_POWER_NOW')
+        if raw is not None:
+            p_now = raw * 1e-6
+    if p_now is not None and abs(p_now) > 0.2:
+        return max(0.0, abs(p_now))
+
+    cur = _read_float_sysfs(os.path.join(base_dir, 'current_now'))
+    if cur is None:
+        cur = _read_uevent_supply_value(base_dir, 'POWER_SUPPLY_CURRENT_NOW')
+    volt = _read_float_sysfs(os.path.join(base_dir, 'voltage_now'))
+    if volt is None:
+        volt = _read_uevent_supply_value(base_dir, 'POWER_SUPPLY_VOLTAGE_NOW')
+    if cur is not None and volt is not None:
+        p_w = abs(cur * volt) / 1e12
+        if p_w > 0.2:
+            return max(0.0, p_w)
+    return None
+
+
+def get_measured_supply_power_w() -> Optional[float]:
+    """Watts from power_supply drivers (AC telemetry or battery charge/discharge)."""
+    ps_dir = '/sys/class/power_supply'
+    if not os.path.isdir(ps_dir):
+        return None
+    try:
+        for item in os.listdir(ps_dir):
+            base = os.path.join(ps_dir, item)
+            type_path = os.path.join(base, 'type')
+            if not os.path.isfile(type_path):
+                continue
+            with open(type_path, encoding='utf-8') as f:
+                p_type = f.read().strip().lower()
+            is_adapter = (
+                p_type in ('mains', 'usb', 'usb_pd', 'wireless')
+                or re.match(r'^(ADP|AC|ACAD|PD|USB).*$', item, re.IGNORECASE) is not None
+            )
+            if not is_adapter:
+                continue
+            online_path = os.path.join(base, 'online')
+            if os.path.isfile(online_path):
+                with open(online_path, encoding='utf-8') as f:
+                    if int(f.read().strip()) != 1:
+                        continue
+            p_w = _read_supply_power_w_sysfs(base)
+            if p_w is not None:
+                return p_w
+        for item in os.listdir(ps_dir):
+            base = os.path.join(ps_dir, item)
+            type_path = os.path.join(base, 'type')
+            if not os.path.isfile(type_path):
+                continue
+            with open(type_path, encoding='utf-8') as f:
+                if f.read().strip().lower() != 'battery':
+                    continue
+            p_w = _read_supply_power_w_sysfs(base)
+            if p_w is not None:
+                return p_w
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 class PowerTracker:
     def __init__(self):
         self.last_time = time.time()
         self.last_cpu_energy = 0
-        self.last_gpu_energy = 0
-        self.cpu_power = 0.0
-        self.gpu_power = 0.0
-        self.total_power = 0.0
-        
-    def get_cpu_power(self) -> float:
-        """Get CPU power from RAPL sensors (Intel and AMD)"""
+        self.cpu_power: Optional[float] = None
+        self.gpu_power: Optional[float] = None
+        self.total_power: Optional[float] = None
+
+    def get_cpu_power(self) -> Optional[float]:
+        """CPU power from RAPL energy counters (AMD uses the intel-rapl sysfs names)."""
         try:
-            # Try different RAPL paths for both Intel and AMD
-            rapl_paths = [
-                # Intel RAPL paths
+            rapl_paths = (
                 '/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj',
                 '/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj',
-                '/sys/class/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj',  # Package
-                # AMD RAPL paths
-                '/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj',  # AMD also uses intel-rapl namespace
-                '/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj',
                 '/sys/class/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj',
-            ]
-            
+            )
             for path in rapl_paths:
                 if os.path.isfile(path):
                     try:
@@ -185,25 +268,31 @@ class PowerTracker:
                         dt = max(0.001, now - self.last_time)
                         
                         if self.last_cpu_energy > 0:
-                            # Convert microjoules to watts
-                            power_w = (energy_uj - self.last_cpu_energy) / (dt * 1_000_000)
-                            self.cpu_power = max(0, power_w)
-                        
+                            delta_uj = energy_uj - self.last_cpu_energy
+                            if delta_uj < 0:
+                                range_path = path.replace('energy_uj', 'max_energy_range_uj')
+                                try:
+                                    with open(range_path, 'r') as rf:
+                                        mr = int(rf.read().strip())
+                                    if mr > 0:
+                                        delta_uj += mr
+                                except (OSError, ValueError):
+                                    pass
+                            if delta_uj > 0:
+                                self.cpu_power = max(0.0, delta_uj / (dt * 1_000_000))
+
                         self.last_cpu_energy = energy_uj
                         self.last_time = now
                         return self.cpu_power
                     except (PermissionError, OSError):
-                        # Skip this path if we don't have permission
                         continue
         except Exception:
             pass
-        
-        # Fallback: estimate based on CPU usage
-        cpu_pct = psutil.cpu_percent(interval=None)
-        return (cpu_pct / 100.0) * 25.0  # Rough estimate
-    
-    def get_gpu_power(self) -> float:
-        """Get GPU power from nvidia-smi or AMD GPU"""
+
+        return None
+
+    def get_gpu_power(self) -> Optional[float]:
+        """GPU power from driver sensors only (no estimates)."""
         # Try NVIDIA first
         try:
             result = subprocess.run([
@@ -224,20 +313,15 @@ class PowerTracker:
             ], capture_output=True, text=True, timeout=1)
             
             if result.returncode == 0:
-                import json
                 data = json.loads(result.stdout)
-                # Look for power values in the JSON structure
                 for card_id, card_data in data.items():
                     if isinstance(card_data, dict) and 'Power (W)' in card_data:
                         return float(card_data['Power (W)'])
         except Exception:
             pass
         
-        # Try AMD GPU power via sysfs (for newer kernels)
         try:
-            # Look for AMD GPU power files in hwmon directories
             for card in ['card0', 'card1', 'card2']:
-                # Check if this is an AMD GPU first
                 vendor_path = f'/sys/class/drm/{card}/device/vendor'
                 if os.path.isfile(vendor_path):
                     with open(vendor_path, 'r') as f:
@@ -248,26 +332,28 @@ class PowerTracker:
                         hwmon_dir = f'/sys/class/drm/{card}/device/hwmon'
                         if os.path.isdir(hwmon_dir):
                             for hwmon_name in os.listdir(hwmon_dir):
-                                power_path = f'{hwmon_dir}/{hwmon_name}/power1_average'
-                                if os.path.isfile(power_path):
-                                    with open(power_path, 'r') as f:
-                                        power_uw = int(f.read().strip())
-                                    return power_uw / 1_000_000.0  # Convert microwatts to watts
+                                for power_name in ('power1_average', 'power1_input'):
+                                    power_path = f'{hwmon_dir}/{hwmon_name}/{power_name}'
+                                    if os.path.isfile(power_path):
+                                        with open(power_path, 'r') as f:
+                                            power_uw = int(f.read().strip())
+                                        return power_uw / 1_000_000.0  # microwatts -> watts
                         break
         except Exception:
             pass
-        
-        return 0.0
-    
-    def get_total_system_power(self) -> float:
-        """Get CPU + GPU power only"""
+
+        return None
+
+    def get_total_system_power(self) -> Optional[float]:
+        """Sum of whatever CPU/GPU sensors report (each optional)."""
         cpu_pwr = self.get_cpu_power()
         gpu_pwr = self.get_gpu_power()
-        
-        # Return only CPU + GPU power
-        total_power = cpu_pwr + gpu_pwr
-        self.total_power = total_power
-        return total_power
+        parts = [p for p in (cpu_pwr, gpu_pwr) if p is not None]
+        if not parts:
+            self.total_power = None
+            return None
+        self.total_power = sum(parts)
+        return self.total_power
 
 
 # Global power tracker
@@ -275,8 +361,11 @@ power_tracker = PowerTracker()
 
 
 def get_system_power() -> Optional[float]:
-    """Get total system power consumption in watts"""
+    """Measured total: power_supply when available, else CPU+GPU RAPL/driver sum."""
     try:
+        ext = get_measured_supply_power_w()
+        if ext is not None:
+            return ext
         return power_tracker.get_total_system_power()
     except Exception:
         return None
@@ -349,7 +438,6 @@ def read_gpu_intel() -> Tuple[Optional[int], Optional[float]]:
     try:
         out = subprocess.check_output(['intel_gpu_top', '-J', '-s', '100', '-o', '-'],
                                       stderr=subprocess.DEVNULL, text=True, timeout=0.8)
-        import json
         data = json.loads(out.splitlines()[-1])
         if isinstance(data, dict) and 'engines' in data:
             vals = []
@@ -402,14 +490,11 @@ def read_gpu_amd() -> Tuple[Optional[int], Optional[float]]:
         ], capture_output=True, text=True, timeout=1)
         
         if result.returncode == 0:
-            import json
             data = json.loads(result.stdout)
             for card_id, card_data in data.items():
                 if isinstance(card_data, dict):
-                    # Extract utilization
                     if 'GPU use (%)' in card_data:
                         util = int(float(card_data['GPU use (%)']))
-                    # Extract temperature
                     if 'Temperature (C)' in card_data:
                         temp = float(card_data['Temperature (C)'])
                     break

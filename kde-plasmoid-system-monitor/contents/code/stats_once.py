@@ -224,8 +224,8 @@ def _read_supply_power_w(base_dir: str) -> Optional[float]:
         p_now = _read_uevent_value(base_dir, "POWER_SUPPLY_POWER_NOW")
         if p_now is not None:
             p_now *= 1e-6
-    if p_now is not None and p_now > 0.2:
-        return max(0.0, p_now)
+    if p_now is not None and abs(p_now) > 0.2:
+        return max(0.0, abs(p_now))
 
     # Derived from current * voltage (usually micro-units).
     cur = _read_float_file(os.path.join(base_dir, "current_now"))
@@ -235,7 +235,7 @@ def _read_supply_power_w(base_dir: str) -> Optional[float]:
     if volt is None:
         volt = _read_uevent_value(base_dir, "POWER_SUPPLY_VOLTAGE_NOW")
     if cur is not None and volt is not None:
-        p_w = (cur * volt) / 1e12  # uA * uV -> W
+        p_w = abs(cur * volt) / 1e12  # uA * uV -> W (sign varies by driver)
         if p_w > 0.2:
             return max(0.0, p_w)
     return None
@@ -295,7 +295,11 @@ def get_rapl_power_domains(state: dict) -> dict:
     return domains
 
 
-def get_cpu_power_one_shot(cpu_pct: int, state: dict, rapl_domains: dict) -> float:
+def get_cpu_power_one_shot(state: dict, rapl_domains: dict) -> Optional[float]:
+    # Prefer package RAPL; "core" alone under-reports on AMD.
+    if "package" in rapl_domains and rapl_domains["package"] > 0.2:
+        return max(0.0, rapl_domains["package"] * CPU_POWER_MULTIPLIER)
+
     if "core" in rapl_domains:
         cpu_from_core = rapl_domains["core"]
         if "dram" in rapl_domains:
@@ -303,10 +307,6 @@ def get_cpu_power_one_shot(cpu_pct: int, state: dict, rapl_domains: dict) -> flo
         if cpu_from_core > 0.2:
             return max(0.0, cpu_from_core * CPU_POWER_MULTIPLIER)
 
-    if "package" in rapl_domains and rapl_domains["package"] > 0.2:
-        return max(0.0, rapl_domains["package"] * CPU_POWER_MULTIPLIER)
-
-    # Prefer RAPL package energy over real widget refresh interval.
     for p in (
         "/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj",
         "/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj",
@@ -315,7 +315,6 @@ def get_cpu_power_one_shot(cpu_pct: int, state: dict, rapl_domains: dict) -> flo
         if watts is not None and watts > 0.2:
             return max(0.0, watts * CPU_POWER_MULTIPLIER)
 
-    # Prefer direct power sensors that work in one-shot mode.
     for p in (
         "/sys/class/powercap/intel-rapl/intel-rapl:0/power_now",
         "/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/power_now",
@@ -324,18 +323,10 @@ def get_cpu_power_one_shot(cpu_pct: int, state: dict, rapl_domains: dict) -> flo
         if v is not None:
             return max(0.0, v * CPU_POWER_MULTIPLIER)
 
-    # Fallback estimate from CPU load and system size (still approximate).
-    try:
-        logical = max(1, psutil.cpu_count(logical=True) or 1)
-    except Exception:
-        logical = 1
-    estimated_peak = max(25.0, min(140.0, logical * 7.0))
-    idle_floor = 3.0
-    return max(0.0, (idle_floor + (cpu_pct / 100.0) * (estimated_peak - idle_floor)) * CPU_POWER_MULTIPLIER)
+    return None
 
 
-def get_gpu_power_one_shot(rapl_domains: dict) -> float:
-    # NVIDIA direct query.
+def get_gpu_power_one_shot(rapl_domains: dict) -> Optional[float]:
     try:
         out = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=power.draw", "--format=csv,noheader,nounits"],
@@ -348,7 +339,6 @@ def get_gpu_power_one_shot(rapl_domains: dict) -> float:
     except Exception:
         pass
 
-    # AMD hwmon power.
     try:
         for card in ("card0", "card1", "card2"):
             vendor_path = f"/sys/class/drm/{card}/device/vendor"
@@ -368,7 +358,6 @@ def get_gpu_power_one_shot(rapl_domains: dict) -> float:
     except Exception:
         pass
 
-    # Intel/xe/i915 hwmon power for integrated/discrete Intel GPUs.
     try:
         for card in ("card0", "card1", "card2"):
             hwmon_dir = f"/sys/class/drm/{card}/device/hwmon"
@@ -383,14 +372,13 @@ def get_gpu_power_one_shot(rapl_domains: dict) -> float:
     except Exception:
         pass
 
-    # On Intel iGPU laptops, "uncore" RAPL is often the closest available proxy.
     if "uncore" in rapl_domains and rapl_domains["uncore"] > 0.2:
         return max(0.0, rapl_domains["uncore"] * GPU_POWER_MULTIPLIER)
 
-    return 0.0
+    return None
 
 
-def get_supply_power_one_shot(ac_online: bool, estimated_system_w: float) -> Optional[float]:
+def get_supply_power_one_shot(ac_online: bool, measured_components_w: float) -> Optional[float]:
     power_supply_dir = "/sys/class/power_supply"
     if not os.path.isdir(power_supply_dir):
         return None
@@ -425,7 +413,7 @@ def get_supply_power_one_shot(ac_online: bool, estimated_system_w: float) -> Opt
     except Exception:
         pass
 
-    # Battery telemetry can provide real system draw on battery and a useful AC estimate.
+    # Battery telemetry: real discharge/charge power from the supply driver.
     try:
         for item in os.listdir(power_supply_dir):
             base = os.path.join(power_supply_dir, item)
@@ -453,9 +441,9 @@ def get_supply_power_one_shot(ac_online: bool, estimated_system_w: float) -> Opt
 
             # On AC, battery charge rate is additional adapter load.
             if "charg" in status:
-                return max(0.0, estimated_system_w + bat_abs_w)
-            if estimated_system_w > 0.2:
-                return max(0.0, estimated_system_w)
+                return max(0.0, measured_components_w + bat_abs_w)
+            if measured_components_w > 0.2:
+                return max(0.0, measured_components_w)
     except Exception:
         pass
 
@@ -491,19 +479,21 @@ def sample_rates(duration_s: float = RATE_SAMPLE_SECONDS) -> Tuple[float, float,
     return up, down, read_b, write_b
 
 
-def get_power_components(cpu_pct: int, ac_online: bool, state: dict, rapl_domains: dict) -> Tuple[int, int, Optional[int]]:
-    cpu_w = get_cpu_power_one_shot(cpu_pct, state, rapl_domains)
+def get_power_components(ac_online: bool, state: dict, rapl_domains: dict) -> Tuple[Optional[float], Optional[float], Optional[int]]:
+    cpu_w = get_cpu_power_one_shot(state, rapl_domains)
     gpu_w = get_gpu_power_one_shot(rapl_domains)
-    estimated_system_w = max(0.0, cpu_w + gpu_w)
+    measured = 0.0
+    if cpu_w is not None:
+        measured += cpu_w
+    if gpu_w is not None:
+        measured += gpu_w
     if "package" in rapl_domains and "dram" in rapl_domains:
-        estimated_system_w = max(estimated_system_w, rapl_domains["package"] + rapl_domains["dram"])
+        measured = max(measured, rapl_domains["package"] + rapl_domains["dram"])
     elif "package" in rapl_domains:
-        estimated_system_w = max(estimated_system_w, rapl_domains["package"])
+        measured = max(measured, rapl_domains["package"])
 
-    supply_w = get_supply_power_one_shot(ac_online, estimated_system_w)
-    return int(round(max(0.0, cpu_w))), int(round(max(0.0, gpu_w))), (
-        int(round(max(0.0, supply_w))) if supply_w is not None else None
-    )
+    supply_w = get_supply_power_one_shot(ac_online, measured)
+    return cpu_w, gpu_w, (int(round(max(0.0, supply_w))) if supply_w is not None else None)
 
 
 def build_line() -> str:
@@ -516,12 +506,17 @@ def build_line() -> str:
     up_bps, down_bps, read_bps, write_bps = sample_rates()
     ac_online = is_ac_online()
     power_emoji = "⚡" if ac_online else "🔋"
-    cpu_power_w, gpu_power_w, supply_power_w = get_power_components(cpu, ac_online, state, rapl_domains)
+    cpu_power_w, gpu_power_w, supply_power_w = get_power_components(ac_online, state, rapl_domains)
+
+    def _fmt_w(w: Optional[float]) -> str:
+        if w is None:
+            return "--W"
+        return f"{int(round(max(0.0, w)))}W"
 
     cpu_str = f"🔲 {cpu:>3d}%"
     if cpu_temp is not None:
         cpu_str += f"/{cpu_temp:>2d}C"
-    cpu_str += f"/{cpu_power_w}W"
+    cpu_str += f"/{_fmt_w(cpu_power_w)}"
 
     ram_str = f"🐏 {used_gb:.1f}/{total_gb:.0f}G"
 
@@ -531,12 +526,19 @@ def build_line() -> str:
     if gpu_temp is not None:
         gpu_parts.append(f"{gpu_temp:>2d}C")
     gpu_stats = "/".join(gpu_parts) if gpu_parts else "--"
-    gpu_str = f"🎮[{gpu_kind}] {gpu_stats}/{gpu_power_w}W"
+    gpu_str = f"🎮[{gpu_kind}] {gpu_stats}/{_fmt_w(gpu_power_w)}"
 
     disk_str = f"💽 {format_rate(read_bps)}/{format_rate(write_bps)}"
     net_str = f"🌐 {format_rate(down_bps)}/{format_rate(up_bps)}"
-    total_power_w = supply_power_w if supply_power_w is not None else (cpu_power_w + gpu_power_w)
-    power_str = f"{power_emoji} {total_power_w}W"
+    if supply_power_w is not None:
+        total_s = f"{supply_power_w}W"
+    else:
+        measured_parts = [w for w in (cpu_power_w, gpu_power_w) if w is not None]
+        if measured_parts:
+            total_s = f"{int(round(sum(measured_parts)))}W"
+        else:
+            total_s = "--W"
+    power_str = f"{power_emoji} {total_s}"
     _save_state(state)
     return f"{cpu_str}  {ram_str}  {gpu_str}  {disk_str}  {net_str}  {power_str}"
 

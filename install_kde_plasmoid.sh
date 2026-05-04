@@ -34,6 +34,19 @@ echo "[*] Restarting Plasma shell..."
 kquitapp6 plasmashell >/dev/null 2>&1 || true
 nohup plasmashell >/dev/null 2>&1 &
 
+RULE_SRC="$SCRIPT_DIR/contrib/99-intel-rapl-energy-read.rules"
+RULE_DST="/etc/udev/rules.d/99-intel-rapl-energy-read.rules"
+if [[ -f "$RULE_SRC" ]]; then
+  echo "[*] Installing udev rule so your user can read CPU RAPL (fixes CPU --W)..."
+  if sudo install -m 644 "$RULE_SRC" "$RULE_DST" 2>/dev/null; then
+    sudo udevadm control --reload-rules 2>/dev/null || true
+    sudo udevadm trigger -s powercap -c add 2>/dev/null || true
+    echo "[✓] RAPL read rule installed. If CPU still shows --W, reboot once."
+  else
+    echo "[!] udev rule not installed (see header comments in contrib/99-intel-rapl-energy-read.rules)."
+  fi
+fi
+
 echo ""
 echo "[✓] Plasmoid installed."
 echo "[*] Add it to your panel:"
