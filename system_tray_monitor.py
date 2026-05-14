@@ -132,7 +132,7 @@ def get_cpu_percent() -> float:
 def get_cpu_temp() -> Optional[float]:
     try:
         temps = psutil.sensors_temperatures(fahrenheit=False)
-        for key in ('coretemp', 'cpu-thermal', 'k10temp'):
+        for key in ('coretemp', 'cpu-thermal', 'k10temp', 'acpitz'):
             if key in temps and temps[key]:
                 # Prefer package/composite sensor if present
                 for entry in temps[key]:

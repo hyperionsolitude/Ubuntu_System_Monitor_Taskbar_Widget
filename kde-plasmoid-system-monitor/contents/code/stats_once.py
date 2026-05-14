@@ -25,7 +25,7 @@ def get_cpu_percent() -> int:
 def get_cpu_temp() -> Optional[int]:
     try:
         temps = psutil.sensors_temperatures(fahrenheit=False)
-        for key in ("coretemp", "k10temp", "cpu-thermal"):
+        for key in ("coretemp", "k10temp", "cpu-thermal", "acpitz"):
             if key in temps and temps[key]:
                 return int(round(float(temps[key][0].current)))
     except Exception:
