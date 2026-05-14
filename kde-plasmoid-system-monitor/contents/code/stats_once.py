@@ -137,6 +137,11 @@ def is_ac_online() -> bool:
     try:
         power_supply_dir = "/sys/class/power_supply"
         if os.path.isdir(power_supply_dir):
+            # 1. Check for AC adapter
+            ac_patterns = [
+                r'^ADP.*$', r'^AC.*$', r'^ACAD.*$',
+                r'.*ac.*adapter.*', r'.*mains.*', r'.*line.*power.*'
+            ]
             for item in os.listdir(power_supply_dir):
                 base = os.path.join(power_supply_dir, item)
                 type_path = os.path.join(base, "type")
@@ -147,15 +152,25 @@ def is_ac_online() -> bool:
                 is_adapter = (
                     p_type in ("mains", "usb", "usb_pd", "wireless")
                     or re.match(r"^(ADP|AC|ACAD|PD|USB).*$", item, re.IGNORECASE) is not None
+                    or any(re.match(p, item, re.IGNORECASE) for p in ac_patterns)
                 )
-                if not is_adapter:
-                    continue
-                online_path = os.path.join(base, "online")
-                if os.path.isfile(online_path):
-                    with open(online_path, "r", encoding="utf-8") as f:
-                        if int(f.read().strip()) == 1:
-                            return True
-        return False
+                if is_adapter:
+                    online_path = os.path.join(base, "online")
+                    if os.path.isfile(online_path):
+                        with open(online_path, "r", encoding="utf-8") as f:
+                            if int(f.read().strip()) == 1:
+                                return True
+
+            # 2. Only return False (Battery) if a battery is actually discharging
+            battery_patterns = [r'^BAT\d*$', r'.*battery.*']
+            for item in os.listdir(power_supply_dir):
+                if any(re.match(p, item, re.IGNORECASE) for p in battery_patterns):
+                    status_path = os.path.join(power_supply_dir, item, "status")
+                    if os.path.isfile(status_path):
+                        with open(status_path, "r", encoding="utf-8") as f:
+                            if f.read().strip().lower() == "discharging":
+                                return False
+        return True
     except Exception:
         return True
 
@@ -355,6 +370,7 @@ def get_gpu_power_one_shot(rapl_domains: dict) -> Optional[float]:
                         v = _read_float_file(p_path, scale=1e-6)  # microwatts -> watts
                         if v is not None:
                             return max(0.0, v * GPU_POWER_MULTIPLIER)
+            break
     except Exception:
         pass
 

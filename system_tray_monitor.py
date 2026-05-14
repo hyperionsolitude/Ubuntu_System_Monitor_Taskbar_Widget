@@ -619,7 +619,7 @@ def get_power_source() -> str:
             r'.*mains.*',          # Any device containing "mains"
             r'.*line.*power.*',    # Any device containing "line power"
         ]
-        
+
         # Check all power supplies using regex patterns
         power_supply_dir = '/sys/class/power_supply'
         if os.path.isdir(power_supply_dir):
@@ -630,7 +630,7 @@ def get_power_source() -> str:
                     if re.match(pattern, item, re.IGNORECASE):
                         is_ac_adapter = True
                         break
-                
+
                 if is_ac_adapter:
                     online_path = os.path.join(power_supply_dir, item, 'online')
                     if os.path.isfile(online_path):
@@ -640,34 +640,32 @@ def get_power_source() -> str:
                                     return 'AC'
                         except (ValueError, OSError):
                             continue
-        
-        # If no AC adapter is online, check if we have batteries
-        battery_patterns = [r'^BAT\d*$', r'.*battery.*']
-        has_battery = False
-        
-        if os.path.isdir(power_supply_dir):
-            for item in os.listdir(power_supply_dir):
-                for pattern in battery_patterns:
-                    if re.match(pattern, item, re.IGNORECASE):
-                        has_battery = True
-                        break
-                if has_battery:
-                    break
-        
-        # If we have batteries and AC is not online, we're on battery
-        if has_battery:
-            return 'BATTERY'
-        
-        # Try using upower as fallback
+
+        # Try using upower as fallback for AC status
         try:
-            result = subprocess.run(['upower', '-i', '/org/freedesktop/UPower/devices/line_power_AC'], 
+            result = subprocess.run(['upower', '-i', '/org/freedesktop/UPower/devices/line_power_AC'],
                                   capture_output=True, text=True, timeout=2)
             if result.returncode == 0 and 'online: yes' in result.stdout:
                 return 'AC'
         except Exception:
             pass
-        
-        # Default to AC if we can't determine (desktop systems)
+
+        # Only return 'BATTERY' if a battery is actually discharging
+        battery_patterns = [r'^BAT\d*$', r'.*battery.*']
+        if os.path.isdir(power_supply_dir):
+            for item in os.listdir(power_supply_dir):
+                is_battery = any(re.match(pattern, item, re.IGNORECASE) for pattern in battery_patterns)
+                if is_battery:
+                    status_path = os.path.join(power_supply_dir, item, 'status')
+                    if os.path.isfile(status_path):
+                        try:
+                            with open(status_path, 'r') as f:
+                                if f.read().strip().lower() == 'discharging':
+                                    return 'BATTERY'
+                        except (OSError, ValueError):
+                            continue
+
+        # Default to AC if we can't determine (desktop systems or charging laptops)
         return 'AC'
     except Exception:
         return 'AC'
